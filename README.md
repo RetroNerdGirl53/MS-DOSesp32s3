@@ -1,26 +1,70 @@
-<img width="150" height="150" align="left" style="float: left; margin: 0 10px 0 0;" alt="MS-DOS logo" src="https://github.com/Microsoft/MS-DOS/blob/main/.readmes/msdos-logo.png">   
+# ESP-DOS (v2.0 Port for ESP32)
 
-# MS-DOS v1.25, v2.0, v4.0 Source Code
+This project is a functional port and adaptation of MS-DOS v2.0 concepts to run natively on the ESP32-S3 (and likely other ESP32 variants).
 
-This repo contains the original source-code and compiled binaries for MS-DOS v1.25 and MS-DOS v2.0, plus the source-code for MS-DOS v4.00 jointly developed by IBM and
-Microsoft.
+It provides a **DOS-compatible API layer** (`dos.h`, `int86`) that allows existing DOS C source code to be recompiled and run on the ESP32 with minimal changes.
 
-The MS-DOS v1.25 and v2.0 files [were originally shared at the Computer History Museum on March 25th, 2014]( http://www.computerhistory.org/atchm/microsoft-ms-dos-early-source-code/) and are being (re)published in this repo to make them easier to find, reference-to in external writing and works, and to allow exploration and experimentation for those interested in early PC Operating Systems.  
+## Features
 
-# License
+*   **Command Shell (COMMAND.COM)**: Supports internal commands like `DIR`, `TYPE`, `CLS`, `VER`, `MD`, `RD`, `CD`, `DEL`.
+*   **Kernel Services (INT 21h)**: Implements core DOS system calls mapped to ESP32 native functions.
+    *   File System: Mapped to LittleFS (large partition support).
+    *   Console I/O: Mapped to Serial (UART).
+*   **Compatibility Layer**: `dos.h` provides `union REGS`, `struct SREGS`, `int86()`, `intdos()`, allowing source-level compatibility for legacy DOS apps.
 
-All files within this repo are released under the [MIT License]( https://en.wikipedia.org/wiki/MIT_License) as per the [LICENSE file](https://github.com/Microsoft/MS-DOS/blob/main/LICENSE) stored in the root of this repo.
+## How to Build
 
-# For historical reference
+### Arduino IDE
+1.  Open `EspDos/EspDos.ino` in the Arduino IDE.
+2.  Select your board: **ESP32S3 Dev Module**.
+3.  Configure Board Settings:
+    *   **Flash Size**: 16MB (128Mb)
+    *   **PSRAM**: OPI PSRAM
+    *   **Partition Scheme**: Default 16MB (or Large SPIFFS/LittleFS)
+    *   **USB Mode**: Hardware CDC and JTAG (for Serial)
+4.  Compile and Upload.
 
-The source files in this repo are for historical reference and will be kept static, so please **don’t send** Pull Requests suggesting any modifications to the source files, but feel free to fork this repo and experiment 😊.  
+### PlatformIO
+1.  Open the project in **PlatformIO** (VSCode).
+2.  The `platformio.ini` is configured for the `esp32-s3-devkitc-1`.
+3.  Build and Upload:
+    ```bash
+    pio run --target upload
+    ```
+4.  Monitor Serial Output (115200 baud):
+    ```bash
+    pio device monitor
+    ```
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).  For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+## Adding Your Own DOS Programs
 
-# Trademarks
+To run "recompiled" DOS source code:
 
-This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft
-trademarks or logos is subject to and must follow
-[Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general).
-Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
-Any use of third-party trademarks or logos are subject to those third-party's policies.
+1.  Copy your C source file (e.g., `MYAPP.C`) into the `EspDos/` folder.
+2.  Ensure it includes `#include "dos.h"` (provided by this project).
+3.  Rename your `main` function to something unique, e.g., `int myapp_main(int argc, char* argv[])`.
+4.  Register your program in `EspDos/EspDos.ino`:
+    ```cpp
+    extern int myapp_main(int argc, char* argv[]);
+
+    void setup() {
+        // ...
+        Command::registerCommand("MYAPP", myapp_main);
+        // ...
+    }
+    ```
+5.  Recompile and upload. You can now type `MYAPP` at the ESP-DOS prompt.
+
+## Example
+
+An example program `HELLO.EXE` is included (`EspDos/hello.cpp`). It demonstrates:
+*   Printing strings using `INT 21h, AH=09h`.
+*   Creating and writing to a file using `INT 21h` file services.
+
+Type `HELLO` at the prompt to run it.
+
+## Technical Details
+
+*   **Filesystem**: The ESP32's LittleFS is used as the disk. Directories and files behave like DOS.
+*   **Memory**: The DOS "segments" are ignored. Pointers are passed directly in registers (e.g., `DX` holds the pointer value).
+*   **API**: Only a subset of INT 21h is implemented, focusing on File I/O and Console I/O.
