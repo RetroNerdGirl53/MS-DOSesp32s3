@@ -1,11 +1,12 @@
-#include "kernel.h"
-#include "dos.h"
+#include "KERNEL.h"
+#include "DOS.h"
 
 // Initialize static members
 std::vector<DosFileHandle> Kernel::fileHandles(20); // Standard 20 handles
 DTA* Kernel::currentDTA = nullptr;
 String Kernel::currentDir = "/";
 uint8_t Kernel::currentDrive = 2; // Default to C:
+fs::FS* Kernel::vol = nullptr; // Active filesystem
 
 File Kernel::dirEnumFile;
 String Kernel::dirEnumPath;
@@ -30,14 +31,30 @@ int intdosx(union REGS *inregs, union REGS *outregs, struct SREGS *segregs) {
 }
 
 bool Kernel::begin() {
-    // Initialize LittleFS
-    // Try "spiffs" label first (standard Arduino default)
-    if (!LittleFS.begin(true, "/littlefs", 10, "spiffs")) {
-        // Try "littlefs" label (some newer schemes)
-        if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
-             Serial.println("Error: Failed to mount LittleFS. Check Partition Scheme!");
-             return false;
-        }
+    // Try mounting Filesystem
+    // 1. LittleFS (spiffs label)
+    if (LittleFS.begin(true, "/littlefs", 10, "spiffs")) {
+        vol = &LittleFS;
+        Serial.println("Mounted LittleFS (spiffs)");
+    }
+    // 2. LittleFS (littlefs label)
+    else if (LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
+        vol = &LittleFS;
+        Serial.println("Mounted LittleFS (littlefs)");
+    }
+    // 3. FFat (ffat label)
+    else if (FFat.begin(true, "/ffat", 10, "ffat")) {
+        vol = &FFat;
+        Serial.println("Mounted FFat (ffat)");
+    }
+    // 4. FFat (default/any label)
+    else if (FFat.begin(true)) {
+        vol = &FFat;
+        Serial.println("Mounted FFat (default)");
+    }
+    else {
+         Serial.println("Error: Failed to mount Filesystem (LittleFS or FFat). Check Partition Scheme!");
+         return false;
     }
 
     // Set default DTA
@@ -147,11 +164,13 @@ void Kernel::handleInt21(union REGS *in, union REGS *out, struct SREGS *seg) {
 
 void Kernel::consoleInput(union REGS *in, union REGS *out) {
     if (in->h.ah == 0x01) {
+        // Echo input
         while (!Serial.available()) delay(1);
         char c = Serial.read();
         Serial.print(c);
         out->h.al = c;
     } else if (in->h.ah == 0x08 || in->h.ah == 0x07) {
+        // No echo
         while (!Serial.available()) delay(1);
         char c = Serial.read();
         out->h.al = c;
@@ -165,12 +184,20 @@ void Kernel::consoleInput(union REGS *in, union REGS *out) {
             while (!Serial.available()) delay(1);
             char c = Serial.read();
             if (c == '\r') {
-                Serial.print(c); // Echo CR
+                // Serial.print(c); // Echo CR ? DOS usually does echoes CR as CR LF? Or just CR?
+                // Actually DOS echoes CR as nothing usually in 0xA, just returns.
+                // But shell expects new line.
+                // Let's echo CR only.
+                // Serial.print('\r');
+                // Wait, Command::readLine prints newline after.
+
+                // Let's just store it.
                 buf[2 + count] = c; // Store CR as DOS expects
-                count++;
+                // count does NOT increment for the CR in the count byte usually?
+                // "The byte at offset 1 is set to the number of characters read, excluding the carriage return."
                 break;
             }
-            if (c == 8) { // Backspace
+            if (c == 8 || c == 127) { // Backspace
                 if (count > 0) {
                     count--;
                     Serial.print("\b \b");
@@ -182,7 +209,6 @@ void Kernel::consoleInput(union REGS *in, union REGS *out) {
             count++;
         }
         buf[1] = count;
-        // DOS usually terminates with CR in the buffer too? No, just length.
     }
 }
 
@@ -195,11 +221,7 @@ void Kernel::consoleOutput(union REGS *in, union REGS *out) {
         } else {
             if (Serial.available()) {
                 out->h.al = Serial.read();
-                clearCarry(out); // Zero flag usually? 0x06 sets ZF if no char.
-                                 // Wait, DL=FF means input. ZF=1 if no char.
-                                 // We don't have ZF in REGS structure explicitly exposed easily to set logic?
-                                 // Actually REGS has 'flags'.
-                                 // bit 6 is ZF.
+                clearCarry(out);
                 out->x.flags &= ~0x40; // Clear ZF (char available)
             } else {
                 out->x.flags |= 0x40; // Set ZF (no char)
@@ -244,11 +266,25 @@ String Kernel::getPathFromRegs(union REGS *in, struct SREGS *seg) {
         path = base + path;
     }
 
-    // Resolve ".." and "." (simple implementation)
-    // For now, LittleFS might not handle ".." automatically?
-    // Actually LittleFS doesn't support "." or ".." in paths generally. We need to canonicalize.
+    // Resolve ".." (Basic)
+    while (path.indexOf("/..") != -1) {
+        int ddot = path.indexOf("/..");
+        int prevSlash = path.lastIndexOf('/', ddot - 1);
+        if (prevSlash != -1) {
+            path = path.substring(0, prevSlash) + path.substring(ddot + 3);
+            if (path == "") path = "/";
+        } else {
+            // Root
+            path = "/";
+        }
+    }
 
-    // Simplistic canonicalization
+    // Resolve "."
+    while (path.indexOf("/./") != -1) {
+        path.replace("/./", "/");
+    }
+    if (path.endsWith("/.")) path = path.substring(0, path.length()-2);
+
     return path;
 }
 
@@ -271,7 +307,7 @@ void Kernel::createFile(union REGS *in, union REGS *out) {
         return;
     }
 
-    File f = LittleFS.open(path, "w+");
+    File f = vol->open(path, "w+");
     if (!f) {
         out->x.ax = 3; // Path not found (or access denied)
         setCarry(out);
@@ -298,13 +334,10 @@ void Kernel::openFile(union REGS *in, union REGS *out) {
 
     // Access mode in AL (0=Read, 1=Write, 2=RW)
     const char* mode = "r";
-    // DOS AH=3D is Open Existing.
-    // "w" in LittleFS truncates (creates new). We want "r+" for write to existing without truncate.
-    // "r+" fails if file does not exist, which matches DOS AH=3D behavior.
     if ((in->h.al & 0x03) == 1) mode = "r+";
     if ((in->h.al & 0x03) == 2) mode = "r+";
 
-    File f = LittleFS.open(path, mode);
+    File f = vol->open(path, mode);
     if (!f) {
         out->x.ax = 2; // File not found
         setCarry(out);
@@ -352,11 +385,15 @@ void Kernel::readFile(union REGS *in, union REGS *out) {
         int read = 0;
         char* cbuf = (char*)buf;
         while (read < count) {
-            if (Serial.available()) {
-                cbuf[read++] = Serial.read();
-            } else {
-                break; // Or wait? DOS typically waits for line input or raw char depending on mode
-            }
+            // Wait for char
+             while (!Serial.available()) delay(1);
+             cbuf[read++] = Serial.read();
+             // In DOS, reading from Stdin raw often returns after 1 char if not buffered?
+             // Or waits for count?
+             // Usually line buffered if cooked mode, raw if raw.
+             // We're simulating "Cooked" basically but without line editing here?
+             // Actually handle 0 is typically console input.
+             // If we read 1 byte, we return.
         }
         out->x.ax = read;
         clearCarry(out);
@@ -394,7 +431,7 @@ void Kernel::writeFile(union REGS *in, union REGS *out) {
 
 void Kernel::deleteFile(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    if (LittleFS.remove(path)) {
+    if (vol->remove(path)) {
         clearCarry(out);
     } else {
         out->x.ax = 2; // File not found
@@ -442,7 +479,7 @@ void Kernel::getFileAttributes(union REGS *in, union REGS *out) {
             return;
         }
 
-        File f = LittleFS.open(path);
+        File f = vol->open(path);
         if (!f) {
             out->x.ax = 2;
             setCarry(out);
@@ -487,8 +524,17 @@ void Kernel::getDiskFreeSpace(union REGS *in, union REGS *out) {
     // Returns: AX=sectors/cluster, BX=avail clusters, CX=bytes/sector, DX=total clusters
     // Fake values for compatibility
 
-    size_t total = LittleFS.totalBytes();
-    size_t used = LittleFS.usedBytes();
+    size_t total = 0;
+    size_t used = 0;
+
+    if (vol == &LittleFS) {
+        total = LittleFS.totalBytes();
+        used = LittleFS.usedBytes();
+    } else if (vol == &FFat) {
+        total = FFat.totalBytes();
+        used = FFat.usedBytes();
+    }
+
     size_t free = total - used;
 
     out->x.cx = 512; // Bytes per sector
@@ -504,7 +550,7 @@ void Kernel::getDiskFreeSpace(union REGS *in, union REGS *out) {
 
 void Kernel::createDirectory(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    if (LittleFS.mkdir(path)) {
+    if (vol->mkdir(path)) {
         clearCarry(out);
     } else {
         out->x.ax = 3; // Path not found / access denied
@@ -514,7 +560,7 @@ void Kernel::createDirectory(union REGS *in, union REGS *out) {
 
 void Kernel::removeDirectory(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    if (LittleFS.rmdir(path)) {
+    if (vol->rmdir(path)) {
         clearCarry(out);
     } else {
         out->x.ax = 16; // Current directory / in use / not found
@@ -524,7 +570,7 @@ void Kernel::removeDirectory(union REGS *in, union REGS *out) {
 
 void Kernel::changeDirectory(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    File f = LittleFS.open(path);
+    File f = vol->open(path);
     if (f && f.isDirectory()) {
         currentDir = path;
         f.close();
@@ -558,7 +604,7 @@ void Kernel::findFirst(union REGS *in, union REGS *out) {
 
     // Open directory
     if (dirEnumFile) dirEnumFile.close();
-    dirEnumFile = LittleFS.open(dirEnumPath);
+    dirEnumFile = vol->open(dirEnumPath);
 
     if (!dirEnumFile || !dirEnumFile.isDirectory()) {
         out->x.ax = 3; // Path not found

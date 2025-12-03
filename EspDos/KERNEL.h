@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include <FFat.h>
 #include <vector>
 
 // Forward declaration of REGS from dos.h
@@ -65,6 +66,10 @@ private:
 
     static void getVersion(union REGS *in, union REGS *out);            // AH=30
 
+public:
+    static fs::FS* vol; // Active filesystem
+
+private:
     // Helper methods
     static int getFreeHandle();
     static String getPathFromRegs(union REGS *in, struct SREGS *seg);

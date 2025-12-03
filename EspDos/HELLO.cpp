@@ -1,9 +1,7 @@
 #include <Arduino.h>
-#include "dos.h"
+#include "DOS.h"
 
-// This is a standard DOS-style C program function.
-// In a real DOS environment, this would be 'main'.
-// Here, we can name it whatever, and register it.
+// --- HELLO ---
 int hello_main(int argc, char* argv[]) {
     // Print using DOS API (int 21h, AH=09h)
     char msg[] = "Hello from a 'recompiled' DOS application running on ESP32!$";
