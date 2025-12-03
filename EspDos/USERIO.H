@@ -1,8 +1,9 @@
-#ifndef USER_IO_H
-#define USER_IO_H
+#ifndef USERIO_H
+#define USERIO_H
 
 #include <Arduino.h>
-#include "dos.h"
+#include "DOS.H"
+#include <vector>
 
 // Helper class for Userland I/O using ONLY DOS Interrupts
 // No direct Serial access allowed here.
@@ -52,5 +53,35 @@ public:
         return (char)regs.h.al;
     }
 };
+
+// Helper to read all lines from stdin
+static std::vector<String> readLinesFromStdin() {
+    std::vector<String> lines;
+
+    char buffer[256];
+    String currentLine = "";
+
+    union REGS regs;
+
+    while (true) {
+        regs.h.ah = 0x3F;
+        regs.x.bx = 0; // STDIN
+        regs.x.cx = 1;
+        regs.x.dx = (uintptr_t)buffer;
+        int86(0x21, &regs, &regs);
+
+        if (regs.x.cflag || regs.x.ax == 0) break; // Error or EOF
+
+        char c = buffer[0];
+        if (c == '\n') {
+            lines.push_back(currentLine);
+            currentLine = "";
+        } else if (c != '\r') {
+            currentLine += c;
+        }
+    }
+    if (currentLine.length() > 0) lines.push_back(currentLine);
+    return lines;
+}
 
 #endif

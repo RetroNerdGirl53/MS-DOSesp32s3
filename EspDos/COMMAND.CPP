@@ -1,7 +1,7 @@
-#include "command.h"
-#include "dos.h"
-#include "kernel.h"
-#include "user_io.h"
+#include "COMMAND.H"
+#include "DOS.H"
+#include "KERNEL.H"
+#include "USERIO.H"
 
 std::vector<ExternalCommand> Command::externalCommands;
 
@@ -654,13 +654,71 @@ void Command::cmdShift(String args) {
 void Command::cmdGoto(String args) {
     if (!batchActive) return;
     String label = ":" + args;
+    label.toUpperCase();
 
     // Rewind file and search for label
-    // Reset batchLine/offset to 0
-    batchLine = 0; // Simplified.
-    // In real DOS, GOTO scans forward, then rewind if not found.
-    // Here we just restart reading lines until match.
-    // TODO: Implement efficiently.
+    // Use DOS file I/O to read line by line.
+
+    union REGS regs;
+    char path[64];
+    strcpy(path, batchFile.c_str());
+
+    // Open
+    regs.h.ah = 0x3D;
+    regs.h.al = 0;
+    regs.x.dx = (uintptr_t)path;
+    int86(0x21, &regs, &regs);
+
+    if (regs.x.cflag) {
+        DosIO::println("Batch file missing");
+        batchActive = false;
+        return;
+    }
+    int handle = regs.x.ax;
+
+    long currentOffset = 0;
+    bool found = false;
+
+    while(true) {
+        // Read char by char to form line
+        String line = "";
+        char c;
+        long lineStart = currentOffset;
+
+        while(true) {
+            regs.h.ah = 0x3F;
+            regs.x.bx = handle;
+            regs.x.cx = 1;
+            regs.x.dx = (uintptr_t)&c;
+            int86(0x21, &regs, &regs);
+
+            if (regs.x.cflag || regs.x.ax == 0) break; // EOF/Error
+
+            currentOffset++;
+            if (c == '\n') break;
+            if (c != '\r') line += c;
+        }
+
+        if (line.length() == 0 && regs.x.ax == 0) break; // EOF
+
+        line.trim();
+        line.toUpperCase();
+
+        if (line == label) {
+            found = true;
+            batchLine = currentOffset; // Set next line to read
+            break;
+        }
+    }
+
+    regs.h.ah = 0x3E;
+    regs.x.bx = handle;
+    int86(0x21, &regs, &regs);
+
+    if (!found) {
+        DosIO::println("Label not found");
+        batchActive = false;
+    }
 }
 
 void Command::cmdIf(String args) {

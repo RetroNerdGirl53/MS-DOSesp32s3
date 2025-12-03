@@ -2,7 +2,7 @@
 #define DOS_H
 
 #include <stdint.h>
-#include "kernel.h"
+#include "KERNEL.H"
 
 // Define standard DOS types
 typedef uint8_t BYTE;
