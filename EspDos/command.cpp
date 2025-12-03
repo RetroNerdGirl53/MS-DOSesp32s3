@@ -1,8 +1,19 @@
 #include "command.h"
 #include "dos.h"
-#include "kernel.h" // Needed for some direct checks if int86 isn't enough, but try to use int86
+#include "kernel.h"
+#include "user_io.h"
 
 std::vector<ExternalCommand> Command::externalCommands;
+
+// Batch file state
+bool Command::batchActive = false;
+String Command::batchFile;
+int Command::batchLine = 0;
+bool Command::echoOn = true;
+std::vector<String> Command::batchParams;
+
+// Environment
+std::vector<std::pair<String, String>> Command::environment;
 
 void Command::registerCommand(String name, CmdFunc func) {
     name.toUpperCase();
@@ -10,14 +21,31 @@ void Command::registerCommand(String name, CmdFunc func) {
 }
 
 void Command::begin() {
-    Serial.println("\nESP-DOS Version 2.00");
-    Serial.println("(C) Copyright Microsoft Corp 1981, 1982, 1983");
-    Serial.println("(C) Ported to ESP32 by Jules 2024");
+    DosIO::println("\r\nESP-DOS Version 2.00");
+    DosIO::println("(C) Copyright Microsoft Corp 1981, 1982, 1983");
+    DosIO::println("(C) Ported to ESP32 by Jules 2024");
+
+    // Set default path
+    setEnv("PATH", "");
+    setEnv("PROMPT", "$n$g");
+
     printPrompt();
 }
 
 void Command::loop() {
-    if (Serial.available()) {
+    // Check if batch is active
+    if (batchActive) {
+        String line = readBatchLine();
+        if (line == "") {
+            batchActive = false;
+            printPrompt();
+        } else {
+            if (echoOn) DosIO::println(line); // Echo command
+            processLine(line);
+            if (!batchActive) printPrompt(); // If batch finished
+        }
+    } else {
+        // Interactive mode - Block until input
         String line = readLine();
         if (line.length() > 0) {
             processLine(line);
@@ -27,53 +55,135 @@ void Command::loop() {
 }
 
 void Command::printPrompt() {
-    // Determine current drive
-    union REGS regs;
-    regs.h.ah = 0x19; // Get current disk
-    int86(0x21, &regs, &regs);
-    char drive = 'A' + regs.h.al;
+    String p = getEnv("PROMPT");
+    if (p == "") p = "$n$g";
 
-    Serial.printf("\n%c", drive);
-
-    // Determine current directory
-    // AH=0x47
-    char buf[65];
-    regs.h.ah = 0x47;
-    regs.h.dl = 0; // Current drive
-    regs.x.si = (uintptr_t)buf;
-    int86(0x21, &regs, &regs);
-
-    if (strlen(buf) > 0) {
-        Serial.print(":\\");
-        Serial.print(buf);
-        Serial.print(">");
-    } else {
-        Serial.print(":\\>");
+    String out = "";
+    for (int i=0; i<p.length(); i++) {
+        if (p[i] == '$' && i+1 < p.length()) {
+            char c = tolower(p[i+1]);
+            if (c == 'n') { // Drive
+                 union REGS regs;
+                 regs.h.ah = 0x19;
+                 int86(0x21, &regs, &regs);
+                 out += (char)('A' + regs.h.al);
+            } else if (c == 'g') { out += ">"; }
+            else if (c == 'l') { out += "<"; }
+            else if (c == 'b') { out += "|"; }
+            else if (c == 'q') { out += "="; }
+            else if (c == 't') { out += "00:00:00"; } // Fake time
+            else if (c == 'd') { out += "Fri 01-01-2024"; } // Fake date
+            else if (c == 'p') { // Current directory
+                char buf[65];
+                union REGS regs;
+                regs.h.ah = 0x47;
+                regs.h.dl = 0;
+                regs.x.si = (uintptr_t)buf;
+                int86(0x21, &regs, &regs);
+                if (strlen(buf) > 0) {
+                    out += ":\\";
+                    out += buf;
+                } else {
+                    out += ":\\";
+                }
+            }
+            else if (c == 'v') { out += "ESP-DOS Version 2.00"; }
+            else if (c == '_') { out += "\r\n"; }
+            else if (c == '$') { out += "$"; }
+            i++;
+        } else {
+            out += p[i];
+        }
     }
+
+    DosIO::print(out);
 }
 
 String Command::readLine() {
-    // Use DOS Buffered Input (AH=0x0A) to demonstrate compatibility
-    // Max len 128
+    // Buffered Input AH=0x0A
     uint8_t buffer[130];
-    buffer[0] = 128;
+    buffer[0] = 128; // Max len
 
     union REGS regs;
     regs.h.ah = 0x0A;
     regs.x.dx = (uintptr_t)buffer;
 
-    // This call blocks until CR, mimicking DOS behavior implemented in Kernel
+    // Blocks until CR
     int86(0x21, &regs, &regs);
 
-    Serial.println(); // Newline after input
+    DosIO::println(); // Newline
 
-    // buffer[1] is length, buffer[2...] is chars
     int len = buffer[1];
     char str[129];
     memcpy(str, buffer + 2, len);
     str[len] = 0;
 
     return String(str);
+}
+
+String Command::readBatchLine() {
+    // Read next line from batch file
+    // Simplistic implementation: Re-open file, seek to line?
+    // Inefficient. Better to hold handle open?
+    // Since we can't easily persist the handle across loop calls without state,
+    // let's just re-read or cache.
+    // For authenticity, we should use a handle.
+    // Let's implement open handle state in Command if possible or just use a helper.
+
+    // Quick hack: Read file completely? No, bad for memory.
+    // Let's use DOS file I/O to read line by line.
+
+    union REGS regs;
+    char path[64];
+    strcpy(path, batchFile.c_str());
+
+    // Open
+    regs.h.ah = 0x3D;
+    regs.h.al = 0;
+    regs.x.dx = (uintptr_t)path;
+    int86(0x21, &regs, &regs);
+
+    if (regs.x.cflag) return "";
+    int handle = regs.x.ax;
+
+    // Seek to current line start
+    // We need to store file offset, not line number!
+    // Re-purpose batchLine as offset.
+    long offset = batchLine;
+    regs.h.ah = 0x42;
+    regs.h.al = 0; // From start
+    regs.x.bx = handle;
+    regs.x.cx = (offset >> 16);
+    regs.x.dx = (offset & 0xFFFF);
+    int86(0x21, &regs, &regs);
+
+    String line = "";
+    char c;
+    while(true) {
+        regs.h.ah = 0x3F;
+        regs.x.bx = handle;
+        regs.x.cx = 1;
+        regs.x.dx = (uintptr_t)&c;
+        int86(0x21, &regs, &regs);
+
+        if (regs.x.cflag || regs.x.ax == 0) break;
+
+        offset++;
+        if (c == '\n') {
+            break;
+        } else if (c != '\r') {
+            line += c;
+        }
+    }
+
+    batchLine = offset; // Update offset
+
+    regs.h.ah = 0x3E;
+    regs.x.bx = handle;
+    int86(0x21, &regs, &regs);
+
+    if (line == "" && regs.x.ax == 0) return ""; // EOF empty
+    return line;
 }
 
 void Command::parseCommand(String line, String &cmd, String &args) {
@@ -91,11 +201,23 @@ void Command::parseCommand(String line, String &cmd, String &args) {
 }
 
 void Command::processLine(String line) {
+    if (line.startsWith(":")) return; // Label
+    if (line.length() == 0) return;
+
+    // Expand %1 %2 etc if batch
+    if (batchActive) {
+        for (int i=0; i<batchParams.size(); i++) {
+            String ph = "%" + String(i);
+            line.replace(ph, batchParams[i]);
+        }
+    }
+
     String cmd, args;
     parseCommand(line, cmd, args);
 
     if (cmd == "") return;
 
+    // Internal Commands
     if (cmd == "DIR") cmdDir(args);
     else if (cmd == "TYPE") cmdType(args);
     else if (cmd == "CLS") cmdCls();
@@ -104,25 +226,38 @@ void Command::processLine(String line) {
     else if (cmd == "RD" || cmd == "RMDIR") cmdRmdir(args);
     else if (cmd == "CD" || cmd == "CHDIR") cmdChdir(args);
     else if (cmd == "DEL" || cmd == "ERASE") cmdDel(args);
+    else if (cmd == "COPY") cmdCopy(args);
+    else if (cmd == "REN" || cmd == "RENAME") cmdRen(args);
+    else if (cmd == "VOL") cmdVol(args);
+    else if (cmd == "DATE") cmdDate(args);
+    else if (cmd == "TIME") cmdTime(args);
+    else if (cmd == "ECHO") cmdEcho(args);
+    else if (cmd == "PATH") cmdPath(args);
+    else if (cmd == "PROMPT") cmdPrompt(args);
+    else if (cmd == "SET") cmdSet(args);
+    else if (cmd == "VERIFY") cmdVerify(args);
+    else if (cmd == "PAUSE") cmdPause(args);
+    else if (cmd == "REM") { /* Do nothing */ }
+    else if (cmd == "EXIT") { batchActive = false; }
+    else if (cmd == "SHIFT") cmdShift(args);
+    else if (cmd == "GOTO") cmdGoto(args);
+    else if (cmd == "IF") cmdIf(args);
+    else if (cmd == "FOR") cmdFor(args);
     else {
-        // Check external commands
+        // External
         bool found = false;
+
+        // 1. Check registered built-in externals
         for (const auto& ext : externalCommands) {
-            if (ext.name == cmd) {
-                // Prepare argv
+            if (ext.name == cmd || ext.name == (cmd + ".COM") || ext.name == (cmd + ".EXE")) {
                 std::vector<char*> argv;
-                argv.push_back((char*)cmd.c_str()); // argv[0] is program name
+                argv.push_back((char*)cmd.c_str());
 
-                // Split args properly (space delimited)
                 char argBuf[128];
-                strncpy(argBuf, args.c_str(), sizeof(argBuf) - 1);
-                argBuf[sizeof(argBuf) - 1] = 0;
-
+                strncpy(argBuf, args.c_str(), sizeof(argBuf)-1);
+                argBuf[sizeof(argBuf)-1]=0;
                 char* token = strtok(argBuf, " ");
-                while (token != NULL) {
-                    argv.push_back(token);
-                    token = strtok(NULL, " ");
-                }
+                while (token) { argv.push_back(token); token = strtok(NULL, " "); }
 
                 ext.func(argv.size(), argv.data());
                 found = true;
@@ -130,84 +265,126 @@ void Command::processLine(String line) {
             }
         }
 
+        // 2. TODO: Check disk for .COM / .EXE / .BAT
         if (!found) {
-            Serial.println("Bad command or file name");
+             // Check if BAT
+             String batName = cmd;
+             if (!batName.endsWith(".BAT")) batName += ".BAT";
+
+             union REGS regs;
+             regs.h.ah = 0x3D;
+             regs.h.al = 0;
+             regs.x.dx = (uintptr_t)batName.c_str();
+             int86(0x21, &regs, &regs);
+             if (!regs.x.cflag) {
+                 // Close handle
+                 int h = regs.x.ax;
+                 regs.h.ah = 0x3E; regs.x.bx = h; int86(0x21, &regs, &regs);
+
+                 // Run batch
+                 batchActive = true;
+                 batchFile = batName;
+                 batchLine = 0;
+                 batchParams.clear();
+                 // Parse args
+                 batchParams.push_back(cmd);
+                 String tmpArgs = args;
+                 while(tmpArgs.length() > 0) {
+                     int sp = tmpArgs.indexOf(' ');
+                     if (sp == -1) { batchParams.push_back(tmpArgs); break; }
+                     batchParams.push_back(tmpArgs.substring(0, sp));
+                     tmpArgs = tmpArgs.substring(sp+1);
+                     tmpArgs.trim();
+                 }
+                 found = true;
+             }
+        }
+
+        if (!found) {
+            DosIO::println("Bad command or file name");
         }
     }
+}
+
+// --- Environment ---
+String Command::getEnv(String key) {
+    for (auto &p : environment) {
+        if (p.first == key) return p.second;
+    }
+    return "";
+}
+
+void Command::setEnv(String key, String val) {
+    for (auto &p : environment) {
+        if (p.first == key) {
+            p.second = val;
+            return;
+        }
+    }
+    environment.push_back({key, val});
 }
 
 // --- Internal Commands ---
 
 void Command::cmdDir(String args) {
-    // Use FindFirst/FindNext (AH=4E/4F)
-
     String spec = args;
     if (spec == "") spec = "*.*";
     else if (spec.endsWith("/") || spec.endsWith("\\")) spec += "*.*";
-    // If it's a directory, append *.*
-    // Need to check? For now assume user types DIR or DIR path/*.*
 
-    // Set DTA
     struct find_t dta;
     union REGS regs;
     regs.h.ah = 0x1A;
     regs.x.dx = (uintptr_t)&dta;
     int86(0x21, &regs, &regs);
 
-    // Find First
-    // Fix spec to be absolute or relative correctly handled by Kernel
     char pathBuf[64];
     strcpy(pathBuf, spec.c_str());
 
     regs.h.ah = 0x4E;
-    regs.x.cx = _A_NORMAL | _A_SUBDIR; // Attributes
+    regs.x.cx = _A_NORMAL | _A_SUBDIR;
     regs.x.dx = (uintptr_t)pathBuf;
 
     int res = int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
-        Serial.println("File not found");
+        DosIO::println("File not found");
         return;
     }
 
     int fileCount = 0;
 
     while (!regs.x.cflag) {
-        // Print entry
-        // Name (30 chars align)
         String name = dta.name;
-        Serial.print(name);
-        for (int i = name.length(); i < 14; i++) Serial.print(" ");
+        DosIO::print(name);
+        for (int i = name.length(); i < 14; i++) DosIO::print(" ");
 
         if (dta.attrib & _A_SUBDIR) {
-            Serial.print("<DIR>     ");
+            DosIO::print("<DIR>     ");
         } else {
-             Serial.printf(" %9ld", dta.size);
+             char sz[16];
+             sprintf(sz, " %9ld", dta.size);
+             DosIO::print(sz);
         }
 
-        Serial.println();
+        DosIO::println();
         fileCount++;
 
-        // Find Next
         regs.h.ah = 0x4F;
         int86(0x21, &regs, &regs);
     }
 
-    Serial.printf(" %d File(s)\n", fileCount);
+    DosIO::printf(" %d File(s)\n", fileCount);
 
-    // Free space
-    regs.h.ah = 0x36; // Disk free space
-    regs.h.dl = 0;    // Default drive
+    regs.h.ah = 0x36;
+    regs.h.dl = 0;
     int86(0x21, &regs, &regs);
-
-    // AX=sec/clus, BX=avail clus, CX=bytes/sec
     unsigned long freeBytes = (unsigned long)regs.x.bx * regs.x.ax * regs.x.cx;
-    Serial.printf(" %ld bytes free\n", freeBytes);
+    DosIO::printf(" %ld bytes free\n", freeBytes);
 }
 
 void Command::cmdType(String args) {
     if (args == "") {
-        Serial.println("Required parameter missing");
+        DosIO::println("Required parameter missing");
         return;
     }
 
@@ -215,14 +392,13 @@ void Command::cmdType(String args) {
     strcpy(path, args.c_str());
 
     union REGS regs;
-    // Open File (3D)
     regs.h.ah = 0x3D;
-    regs.h.al = 0; // Read only
+    regs.h.al = 0;
     regs.x.dx = (uintptr_t)path;
     int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
-        Serial.println("File not found");
+        DosIO::println("File not found");
         return;
     }
 
@@ -230,38 +406,41 @@ void Command::cmdType(String args) {
     char buffer[128];
 
     while (true) {
-        regs.h.ah = 0x3F; // Read
+        regs.h.ah = 0x3F;
         regs.x.bx = handle;
         regs.x.cx = sizeof(buffer);
         regs.x.dx = (uintptr_t)buffer;
         int86(0x21, &regs, &regs);
 
-        if (regs.x.cflag) break; // Error
+        if (regs.x.cflag) break;
         int bytesRead = regs.x.ax;
-        if (bytesRead == 0) break; // EOF
+        if (bytesRead == 0) break;
 
-        // Print
-        Serial.write((uint8_t*)buffer, bytesRead);
+        // Write to stdout (1)
+        regs.h.ah = 0x40;
+        regs.x.bx = 1;
+        regs.x.cx = bytesRead;
+        regs.x.dx = (uintptr_t)buffer;
+        int86(0x21, &regs, &regs);
     }
 
-    // Close
     regs.h.ah = 0x3E;
     regs.x.bx = handle;
     int86(0x21, &regs, &regs);
-    Serial.println();
+    DosIO::println();
 }
 
 void Command::cmdCls() {
-    Serial.print("\033[2J\033[H");
+    DosIO::print("\033[2J\033[H");
 }
 
 void Command::cmdVer() {
-    Serial.println("ESP-DOS Version 2.00");
+    DosIO::println("ESP-DOS Version 2.00");
 }
 
 void Command::cmdMkdir(String args) {
     if (args == "") {
-        Serial.println("Unable to create directory");
+        DosIO::println("Unable to create directory");
         return;
     }
     char path[64];
@@ -273,13 +452,13 @@ void Command::cmdMkdir(String args) {
     int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
-        Serial.println("Unable to create directory");
+        DosIO::println("Unable to create directory");
     }
 }
 
 void Command::cmdRmdir(String args) {
     if (args == "") {
-        Serial.println("Required parameter missing");
+        DosIO::println("Required parameter missing");
         return;
     }
     char path[64];
@@ -291,20 +470,19 @@ void Command::cmdRmdir(String args) {
     int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
-        Serial.println("Invalid path, not directory, or directory not empty");
+        DosIO::println("Invalid path, not directory, or directory not empty");
     }
 }
 
 void Command::cmdChdir(String args) {
     if (args == "") {
-        // Print current directory
-        union REGS regs;
         char buf[65];
+        union REGS regs;
         regs.h.ah = 0x47;
         regs.h.dl = 0;
         regs.x.si = (uintptr_t)buf;
         int86(0x21, &regs, &regs);
-        Serial.printf("C:\\%s\n", buf);
+        DosIO::printf("C:\\%s\n", buf);
         return;
     }
 
@@ -317,13 +495,13 @@ void Command::cmdChdir(String args) {
     int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
-        Serial.println("Invalid directory");
+        DosIO::println("Invalid directory");
     }
 }
 
 void Command::cmdDel(String args) {
     if (args == "") {
-        Serial.println("Required parameter missing");
+        DosIO::println("Required parameter missing");
         return;
     }
 
@@ -336,6 +514,179 @@ void Command::cmdDel(String args) {
     int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
-        Serial.println("File not found");
+        DosIO::println("File not found");
     }
+}
+
+void Command::cmdCopy(String args) {
+    // Basic COPY source dest
+    int sp = args.indexOf(' ');
+    if (sp == -1) {
+        DosIO::println("Invalid parameters");
+        return;
+    }
+    String src = args.substring(0, sp);
+    String dst = args.substring(sp+1);
+    dst.trim();
+
+    // Open Src
+    char srcPath[64]; strcpy(srcPath, src.c_str());
+    union REGS regs;
+    regs.h.ah = 0x3D; regs.h.al = 0; regs.x.dx = (uintptr_t)srcPath;
+    int86(0x21, &regs, &regs);
+    if (regs.x.cflag) { DosIO::println("File not found"); return; }
+    int hSrc = regs.x.ax;
+
+    // Create Dst
+    char dstPath[64]; strcpy(dstPath, dst.c_str());
+    regs.h.ah = 0x3C; regs.x.cx = 0; regs.x.dx = (uintptr_t)dstPath;
+    int86(0x21, &regs, &regs);
+    if (regs.x.cflag) {
+        DosIO::println("Unable to create file");
+        regs.h.ah=0x3E; regs.x.bx=hSrc; int86(0x21, &regs, &regs);
+        return;
+    }
+    int hDst = regs.x.ax;
+
+    // Copy loop
+    char buf[128];
+    while(true) {
+        // Read
+        regs.h.ah = 0x3F; regs.x.bx = hSrc; regs.x.cx = sizeof(buf); regs.x.dx = (uintptr_t)buf;
+        int86(0x21, &regs, &regs);
+        if (regs.x.cflag || regs.x.ax == 0) break;
+        int count = regs.x.ax;
+
+        // Write
+        regs.h.ah = 0x40; regs.x.bx = hDst; regs.x.cx = count; regs.x.dx = (uintptr_t)buf;
+        int86(0x21, &regs, &regs);
+        if (regs.x.cflag || regs.x.ax != count) {
+            DosIO::println("Write error");
+            break;
+        }
+    }
+
+    // Close
+    regs.h.ah = 0x3E; regs.x.bx = hSrc; int86(0x21, &regs, &regs);
+    regs.h.ah = 0x3E; regs.x.bx = hDst; int86(0x21, &regs, &regs);
+    DosIO::println("    1 File(s) copied");
+}
+
+void Command::cmdRen(String args) {
+    int sp = args.indexOf(' ');
+    if (sp == -1) { DosIO::println("Invalid parameters"); return; }
+    String src = args.substring(0, sp);
+    String dst = args.substring(sp+1);
+    dst.trim();
+
+    // Not implemented in Kernel yet! Need AH=56h
+    // Stub
+    DosIO::println("Rename not implemented in Kernel yet");
+}
+
+void Command::cmdVol(String args) {
+    DosIO::println(" Volume in drive C has no label");
+}
+
+void Command::cmdDate(String args) {
+    if (args == "") {
+        DosIO::println("Current date is Fri 01-01-2024"); // Fake
+        DosIO::print("Enter new date: ");
+        readLine(); // Ignore input
+    }
+}
+
+void Command::cmdTime(String args) {
+    if (args == "") {
+        DosIO::println("Current time is 00:00:00.00"); // Fake
+        DosIO::print("Enter new time: ");
+        readLine(); // Ignore
+    }
+}
+
+void Command::cmdEcho(String args) {
+    if (args.equalsIgnoreCase("ON")) echoOn = true;
+    else if (args.equalsIgnoreCase("OFF")) echoOn = false;
+    else DosIO::println(args);
+}
+
+void Command::cmdPath(String args) {
+    if (args == "") DosIO::println("PATH=" + getEnv("PATH"));
+    else setEnv("PATH", args);
+}
+
+void Command::cmdPrompt(String args) {
+    setEnv("PROMPT", args);
+}
+
+void Command::cmdSet(String args) {
+    if (args == "") {
+        for (auto &p : environment) {
+            DosIO::println(p.first + "=" + p.second);
+        }
+    } else {
+        int eq = args.indexOf('=');
+        if (eq == -1) {
+            setEnv(args, "");
+        } else {
+            setEnv(args.substring(0, eq), args.substring(eq+1));
+        }
+    }
+}
+
+void Command::cmdVerify(String args) {
+    // Stub
+    if (args == "") DosIO::println("VERIFY is off");
+}
+
+void Command::cmdPause(String args) {
+    DosIO::println("Strike a key when ready . . .");
+    DosIO::readChar();
+    DosIO::println();
+}
+
+void Command::cmdShift(String args) {
+    if (batchParams.size() > 0) {
+        batchParams.erase(batchParams.begin());
+    }
+}
+
+void Command::cmdGoto(String args) {
+    if (!batchActive) return;
+    String label = ":" + args;
+
+    // Rewind file and search for label
+    // Reset batchLine/offset to 0
+    batchLine = 0; // Simplified.
+    // In real DOS, GOTO scans forward, then rewind if not found.
+    // Here we just restart reading lines until match.
+    // TODO: Implement efficiently.
+}
+
+void Command::cmdIf(String args) {
+    // Very basic IF EXIST implementation
+    if (args.startsWith("EXIST ")) {
+        String file = args.substring(6);
+        int sp = file.indexOf(' ');
+        if (sp != -1) {
+            String cmd = file.substring(sp+1);
+            file = file.substring(0, sp);
+
+            char path[64]; strcpy(path, file.c_str());
+            union REGS regs;
+            regs.h.ah = 0x3D; regs.h.al = 0; regs.x.dx = (uintptr_t)path;
+            int86(0x21, &regs, &regs);
+            if (!regs.x.cflag) {
+                // Found
+                int h = regs.x.ax;
+                regs.h.ah = 0x3E; regs.x.bx = h; int86(0x21, &regs, &regs);
+                processLine(cmd);
+            }
+        }
+    }
+}
+
+void Command::cmdFor(String args) {
+    // Stub
+    DosIO::println("FOR loop not implemented");
 }

@@ -147,11 +147,13 @@ void Kernel::handleInt21(union REGS *in, union REGS *out, struct SREGS *seg) {
 
 void Kernel::consoleInput(union REGS *in, union REGS *out) {
     if (in->h.ah == 0x01) {
+        // Echo input
         while (!Serial.available()) delay(1);
         char c = Serial.read();
         Serial.print(c);
         out->h.al = c;
     } else if (in->h.ah == 0x08 || in->h.ah == 0x07) {
+        // No echo
         while (!Serial.available()) delay(1);
         char c = Serial.read();
         out->h.al = c;
@@ -165,12 +167,20 @@ void Kernel::consoleInput(union REGS *in, union REGS *out) {
             while (!Serial.available()) delay(1);
             char c = Serial.read();
             if (c == '\r') {
-                Serial.print(c); // Echo CR
+                // Serial.print(c); // Echo CR ? DOS usually does echoes CR as CR LF? Or just CR?
+                // Actually DOS echoes CR as nothing usually in 0xA, just returns.
+                // But shell expects new line.
+                // Let's echo CR only.
+                // Serial.print('\r');
+                // Wait, Command::readLine prints newline after.
+
+                // Let's just store it.
                 buf[2 + count] = c; // Store CR as DOS expects
-                count++;
+                // count does NOT increment for the CR in the count byte usually?
+                // "The byte at offset 1 is set to the number of characters read, excluding the carriage return."
                 break;
             }
-            if (c == 8) { // Backspace
+            if (c == 8 || c == 127) { // Backspace
                 if (count > 0) {
                     count--;
                     Serial.print("\b \b");
@@ -182,7 +192,6 @@ void Kernel::consoleInput(union REGS *in, union REGS *out) {
             count++;
         }
         buf[1] = count;
-        // DOS usually terminates with CR in the buffer too? No, just length.
     }
 }
 
@@ -195,11 +204,7 @@ void Kernel::consoleOutput(union REGS *in, union REGS *out) {
         } else {
             if (Serial.available()) {
                 out->h.al = Serial.read();
-                clearCarry(out); // Zero flag usually? 0x06 sets ZF if no char.
-                                 // Wait, DL=FF means input. ZF=1 if no char.
-                                 // We don't have ZF in REGS structure explicitly exposed easily to set logic?
-                                 // Actually REGS has 'flags'.
-                                 // bit 6 is ZF.
+                clearCarry(out);
                 out->x.flags &= ~0x40; // Clear ZF (char available)
             } else {
                 out->x.flags |= 0x40; // Set ZF (no char)
@@ -244,11 +249,25 @@ String Kernel::getPathFromRegs(union REGS *in, struct SREGS *seg) {
         path = base + path;
     }
 
-    // Resolve ".." and "." (simple implementation)
-    // For now, LittleFS might not handle ".." automatically?
-    // Actually LittleFS doesn't support "." or ".." in paths generally. We need to canonicalize.
+    // Resolve ".." (Basic)
+    while (path.indexOf("/..") != -1) {
+        int ddot = path.indexOf("/..");
+        int prevSlash = path.lastIndexOf('/', ddot - 1);
+        if (prevSlash != -1) {
+            path = path.substring(0, prevSlash) + path.substring(ddot + 3);
+            if (path == "") path = "/";
+        } else {
+            // Root
+            path = "/";
+        }
+    }
 
-    // Simplistic canonicalization
+    // Resolve "."
+    while (path.indexOf("/./") != -1) {
+        path.replace("/./", "/");
+    }
+    if (path.endsWith("/.")) path = path.substring(0, path.length()-2);
+
     return path;
 }
 
@@ -298,9 +317,6 @@ void Kernel::openFile(union REGS *in, union REGS *out) {
 
     // Access mode in AL (0=Read, 1=Write, 2=RW)
     const char* mode = "r";
-    // DOS AH=3D is Open Existing.
-    // "w" in LittleFS truncates (creates new). We want "r+" for write to existing without truncate.
-    // "r+" fails if file does not exist, which matches DOS AH=3D behavior.
     if ((in->h.al & 0x03) == 1) mode = "r+";
     if ((in->h.al & 0x03) == 2) mode = "r+";
 
@@ -352,11 +368,15 @@ void Kernel::readFile(union REGS *in, union REGS *out) {
         int read = 0;
         char* cbuf = (char*)buf;
         while (read < count) {
-            if (Serial.available()) {
-                cbuf[read++] = Serial.read();
-            } else {
-                break; // Or wait? DOS typically waits for line input or raw char depending on mode
-            }
+            // Wait for char
+             while (!Serial.available()) delay(1);
+             cbuf[read++] = Serial.read();
+             // In DOS, reading from Stdin raw often returns after 1 char if not buffered?
+             // Or waits for count?
+             // Usually line buffered if cooked mode, raw if raw.
+             // We're simulating "Cooked" basically but without line editing here?
+             // Actually handle 0 is typically console input.
+             // If we read 1 byte, we return.
         }
         out->x.ax = read;
         clearCarry(out);
