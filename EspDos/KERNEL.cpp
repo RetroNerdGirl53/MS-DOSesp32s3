@@ -651,8 +651,11 @@ void Kernel::findNext(union REGS *in, union REGS *out) {
                 currentDTA->size = entry.size();
 
                 // Name (8.3 format typically required, but we might truncate)
+                // Use strncpy to copy but ensure we don't overflow the 13-byte buffer.
+                // DOS DTA name is 13 bytes (8.3 + null).
+                // Actually `name` in DTA struct is 13 chars.
+                memset(currentDTA->name, 0, 13);
                 strncpy(currentDTA->name, name.c_str(), 12);
-                currentDTA->name[12] = 0;
             }
             entry.close();
             clearCarry(out);

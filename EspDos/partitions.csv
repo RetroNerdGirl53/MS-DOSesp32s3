@@ -1,7 +1,6 @@
-# Name, Type, SubType, Offset, Size, Flags
-nvs,      data, nvs,        ,    20K,
-# otadata partition is not needed without OTA updates
-# The app partition must start at an offset of 0x10000 (64K) or higher
-factory,  app,  factory,    ,     3M,
-# littlefs gets all remaining space
-littlefs, data, spiffs,     ,     12500K,
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        0x5000,
+otadata,  data, ota,     ,        0x2000,
+app0,     app,  ota_0,   ,        0x300000,
+app1,     app,  ota_1,   ,        0x300000,
+spiffs,   data, spiffs,  ,        0x9F0000,
