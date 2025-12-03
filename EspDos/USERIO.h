@@ -55,7 +55,7 @@ public:
 };
 
 // Helper to read all lines from stdin
-static std::vector<String> readLinesFromStdin() {
+static inline std::vector<String> readLinesFromStdin() {
     std::vector<String> lines;
 
     char buffer[256];

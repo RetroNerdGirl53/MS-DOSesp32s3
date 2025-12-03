@@ -344,7 +344,7 @@ void Command::cmdDir(String args) {
     regs.x.cx = _A_NORMAL | _A_SUBDIR;
     regs.x.dx = (uintptr_t)pathBuf;
 
-    int res = int86(0x21, &regs, &regs);
+    int86(0x21, &regs, &regs);
 
     if (regs.x.cflag) {
         DosIO::println("File not found");
@@ -683,7 +683,7 @@ void Command::cmdGoto(String args) {
         // Read char by char to form line
         String line = "";
         char c;
-        long lineStart = currentOffset;
+        // long lineStart = currentOffset; // Unused
 
         while(true) {
             regs.h.ah = 0x3F;

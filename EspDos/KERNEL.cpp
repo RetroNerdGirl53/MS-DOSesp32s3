@@ -524,8 +524,17 @@ void Kernel::getDiskFreeSpace(union REGS *in, union REGS *out) {
     // Returns: AX=sectors/cluster, BX=avail clusters, CX=bytes/sector, DX=total clusters
     // Fake values for compatibility
 
-    size_t total = vol->totalBytes();
-    size_t used = vol->usedBytes();
+    size_t total = 0;
+    size_t used = 0;
+
+    if (vol == &LittleFS) {
+        total = LittleFS.totalBytes();
+        used = LittleFS.usedBytes();
+    } else if (vol == &FFat) {
+        total = FFat.totalBytes();
+        used = FFat.usedBytes();
+    }
+
     size_t free = total - used;
 
     out->x.cx = 512; // Bytes per sector
