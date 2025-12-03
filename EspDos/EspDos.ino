@@ -1,6 +1,6 @@
 #include <Arduino.h>
-#include "KERNEL.H"
-#include "COMMAND.H"
+#include "KERNEL.h"
+#include "COMMAND.h"
 
 // Declaration of external program entry point
 extern int hello_main(int argc, char* argv[]);

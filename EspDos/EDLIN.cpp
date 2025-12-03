@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "USERIO.H"
+#include "USERIO.h"
 
 // --- EDLIN ---
 int edlin_main(int argc, char* argv[]) {

@@ -2,7 +2,7 @@
 #define USERIO_H
 
 #include <Arduino.h>
-#include "DOS.H"
+#include "DOS.h"
 #include <vector>
 
 // Helper class for Userland I/O using ONLY DOS Interrupts

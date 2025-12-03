@@ -1,6 +1,6 @@
 #include <Arduino.h>
-#include "DOS.H"
-#include "USERIO.H"
+#include "DOS.h"
+#include "USERIO.h"
 
 // --- MORE ---
 int more_main(int argc, char* argv[]) {

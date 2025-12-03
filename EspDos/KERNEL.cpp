@@ -1,5 +1,5 @@
-#include "KERNEL.H"
-#include "DOS.H"
+#include "KERNEL.h"
+#include "DOS.h"
 
 // Initialize static members
 std::vector<DosFileHandle> Kernel::fileHandles(20); // Standard 20 handles

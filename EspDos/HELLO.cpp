@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "DOS.H"
+#include "DOS.h"
 
 // --- HELLO ---
 int hello_main(int argc, char* argv[]) {

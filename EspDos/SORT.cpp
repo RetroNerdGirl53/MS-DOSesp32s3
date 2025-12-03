@@ -1,6 +1,6 @@
 #include <Arduino.h>
-#include "DOS.H"
-#include "USERIO.H"
+#include "DOS.h"
+#include "USERIO.h"
 #include <algorithm>
 
 // Need to expose readLinesFromStdin helper from USERIO.H if I made it public static?

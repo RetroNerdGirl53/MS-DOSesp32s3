@@ -1,7 +1,7 @@
-#include "COMMAND.H"
-#include "DOS.H"
-#include "KERNEL.H"
-#include "USERIO.H"
+#include "COMMAND.h"
+#include "DOS.h"
+#include "KERNEL.h"
+#include "USERIO.h"
 
 std::vector<ExternalCommand> Command::externalCommands;
 

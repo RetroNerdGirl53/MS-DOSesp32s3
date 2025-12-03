@@ -1,7 +1,7 @@
 #include <Arduino.h>
-#include "DOS.H"
-#include "KERNEL.H"
-#include "USERIO.H"
+#include "DOS.h"
+#include "KERNEL.h"
+#include "USERIO.h"
 
 // --- CHKDSK ---
 int chkdsk_main(int argc, char* argv[]) {
