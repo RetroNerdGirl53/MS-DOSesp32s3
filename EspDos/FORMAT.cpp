@@ -3,6 +3,7 @@
 #include "KERNEL.h"
 #include "USERIO.h"
 #include <LittleFS.h>
+#include <FFat.h>
 
 extern int chkdsk_main(int argc, char* argv[]);
 
@@ -27,8 +28,25 @@ int format_main(int argc, char* argv[]) {
     DosIO::println();
 
     DosIO::println("Formatting...");
-    // LittleFS format
-    if (LittleFS.format()) {
+    // Format active volume (LittleFS or FFat)
+    // We assume Kernel::vol is set correctly if Kernel::begin() succeeded.
+    // However, `format()` is not a virtual method on `fs::FS` in all Arduino cores.
+    // We need to cast or try both.
+
+    bool formatted = false;
+
+    // Check if it's LittleFS (pointer comparison if possible, or just try)
+    if (Kernel::vol == &LittleFS) {
+        formatted = LittleFS.format();
+    } else if (Kernel::vol == &FFat) {
+        formatted = FFat.format();
+    } else {
+        // Fallback or uninitialized
+        if (LittleFS.format()) formatted = true;
+        else if (FFat.format()) formatted = true;
+    }
+
+    if (formatted) {
         DosIO::println("Format complete.");
         // Report space
         chkdsk_main(0, NULL);

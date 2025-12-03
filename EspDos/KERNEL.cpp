@@ -6,6 +6,7 @@ std::vector<DosFileHandle> Kernel::fileHandles(20); // Standard 20 handles
 DTA* Kernel::currentDTA = nullptr;
 String Kernel::currentDir = "/";
 uint8_t Kernel::currentDrive = 2; // Default to C:
+fs::FS* Kernel::vol = nullptr; // Active filesystem
 
 File Kernel::dirEnumFile;
 String Kernel::dirEnumPath;
@@ -30,14 +31,30 @@ int intdosx(union REGS *inregs, union REGS *outregs, struct SREGS *segregs) {
 }
 
 bool Kernel::begin() {
-    // Initialize LittleFS
-    // Try "spiffs" label first (standard Arduino default)
-    if (!LittleFS.begin(true, "/littlefs", 10, "spiffs")) {
-        // Try "littlefs" label (some newer schemes)
-        if (!LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
-             Serial.println("Error: Failed to mount LittleFS. Check Partition Scheme!");
-             return false;
-        }
+    // Try mounting Filesystem
+    // 1. LittleFS (spiffs label)
+    if (LittleFS.begin(true, "/littlefs", 10, "spiffs")) {
+        vol = &LittleFS;
+        Serial.println("Mounted LittleFS (spiffs)");
+    }
+    // 2. LittleFS (littlefs label)
+    else if (LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
+        vol = &LittleFS;
+        Serial.println("Mounted LittleFS (littlefs)");
+    }
+    // 3. FFat (ffat label)
+    else if (FFat.begin(true, "/ffat", 10, "ffat")) {
+        vol = &FFat;
+        Serial.println("Mounted FFat (ffat)");
+    }
+    // 4. FFat (default/any label)
+    else if (FFat.begin(true)) {
+        vol = &FFat;
+        Serial.println("Mounted FFat (default)");
+    }
+    else {
+         Serial.println("Error: Failed to mount Filesystem (LittleFS or FFat). Check Partition Scheme!");
+         return false;
     }
 
     // Set default DTA
@@ -290,7 +307,7 @@ void Kernel::createFile(union REGS *in, union REGS *out) {
         return;
     }
 
-    File f = LittleFS.open(path, "w+");
+    File f = vol->open(path, "w+");
     if (!f) {
         out->x.ax = 3; // Path not found (or access denied)
         setCarry(out);
@@ -320,7 +337,7 @@ void Kernel::openFile(union REGS *in, union REGS *out) {
     if ((in->h.al & 0x03) == 1) mode = "r+";
     if ((in->h.al & 0x03) == 2) mode = "r+";
 
-    File f = LittleFS.open(path, mode);
+    File f = vol->open(path, mode);
     if (!f) {
         out->x.ax = 2; // File not found
         setCarry(out);
@@ -414,7 +431,7 @@ void Kernel::writeFile(union REGS *in, union REGS *out) {
 
 void Kernel::deleteFile(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    if (LittleFS.remove(path)) {
+    if (vol->remove(path)) {
         clearCarry(out);
     } else {
         out->x.ax = 2; // File not found
@@ -462,7 +479,7 @@ void Kernel::getFileAttributes(union REGS *in, union REGS *out) {
             return;
         }
 
-        File f = LittleFS.open(path);
+        File f = vol->open(path);
         if (!f) {
             out->x.ax = 2;
             setCarry(out);
@@ -507,8 +524,8 @@ void Kernel::getDiskFreeSpace(union REGS *in, union REGS *out) {
     // Returns: AX=sectors/cluster, BX=avail clusters, CX=bytes/sector, DX=total clusters
     // Fake values for compatibility
 
-    size_t total = LittleFS.totalBytes();
-    size_t used = LittleFS.usedBytes();
+    size_t total = vol->totalBytes();
+    size_t used = vol->usedBytes();
     size_t free = total - used;
 
     out->x.cx = 512; // Bytes per sector
@@ -524,7 +541,7 @@ void Kernel::getDiskFreeSpace(union REGS *in, union REGS *out) {
 
 void Kernel::createDirectory(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    if (LittleFS.mkdir(path)) {
+    if (vol->mkdir(path)) {
         clearCarry(out);
     } else {
         out->x.ax = 3; // Path not found / access denied
@@ -534,7 +551,7 @@ void Kernel::createDirectory(union REGS *in, union REGS *out) {
 
 void Kernel::removeDirectory(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    if (LittleFS.rmdir(path)) {
+    if (vol->rmdir(path)) {
         clearCarry(out);
     } else {
         out->x.ax = 16; // Current directory / in use / not found
@@ -544,7 +561,7 @@ void Kernel::removeDirectory(union REGS *in, union REGS *out) {
 
 void Kernel::changeDirectory(union REGS *in, union REGS *out) {
     String path = getPathFromRegs(in, nullptr);
-    File f = LittleFS.open(path);
+    File f = vol->open(path);
     if (f && f.isDirectory()) {
         currentDir = path;
         f.close();
@@ -578,7 +595,7 @@ void Kernel::findFirst(union REGS *in, union REGS *out) {
 
     // Open directory
     if (dirEnumFile) dirEnumFile.close();
-    dirEnumFile = LittleFS.open(dirEnumPath);
+    dirEnumFile = vol->open(dirEnumPath);
 
     if (!dirEnumFile || !dirEnumFile.isDirectory()) {
         out->x.ax = 3; // Path not found
